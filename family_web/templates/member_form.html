@@ -4,159 +4,155 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ '编辑成员' if action == 'edit' else '添加成员' }} - 族谱记录系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <header class="header">
-        <div class="header-inner">
-            <h1>{{ '✏️ 编辑成员' if action == 'edit' else '➕ 添加成员' }}</h1>
-            <nav class="nav-actions">
-                <a href="{{ url_for('index') }}" class="btn btn-secondary">← 返回</a>
-            </nav>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-gradient-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand fs-4" href="{{ url_for('index') }}">🌳 族谱记录系统</a>
+            <div class="ms-auto d-flex gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-light">← 返回首页</a>
+            </div>
         </div>
-    </header>
+    </nav>
 
-    <main class="container">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                <div class="flash-messages">
-                    {% for category, message in messages %}
-                        <div class="flash flash-{{ category }}">{{ message }}</div>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        {% endwith %}
+    <main class="container py-4">
+        <div class="row justify-content-center">
+            <div class="col-lg-8">
+                <div class="card shadow-lg border-0 rounded-4">
+                    <div class="card-header bg-gradient-primary text-white p-4">
+                        <h3 class="mb-0">{{ '✏️ 编辑成员' if action == 'edit' else '➕ 添加成员' }}</h3>
+                    </div>
+                    <div class="card-body p-4">
+                        {% with messages = get_flashed_messages(with_categories=true) %}
+                            {% if messages %}
+                                {% for category, message in messages %}
+                                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                                        {{ message }}
+                                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
 
-        <form method="post" class="member-form">
-            <div class="form-section">
-                <h2>基本信息</h2>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="name">姓名 <span class="required">*</span></label>
-                        <input type="text" id="name" name="name" required
-                               value="{{ member.name if member else '' }}"
-                               placeholder="请输入姓名">
-                    </div>
-                    <div class="form-group">
-                        <label for="gender">性别</label>
-                        <select id="gender" name="gender">
-                            <option value="男" {{ 'selected' if member and member.gender == '男' else '' }}>男</option>
-                            <option value="女" {{ 'selected' if member and member.gender == '女' else '' }}>女</option>
-                            <option value="未知" {{ 'selected' if (not member) or member.gender == '未知' else '' }}>未知</option>
-                        </select>
-                    </div>
-                </div>
+                        <form method="post" id="memberForm">
+                            <!-- 基本信息 -->
+                            <h5 class="text-primary mb-3 pb-2 border-bottom">📝 基本信息</h5>
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-8">
+                                    <label class="form-label fw-bold">姓名 <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" name="name" required
+                                           value="{{ member.name if member else '' }}" placeholder="请输入姓名">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">性别</label>
+                                    <select class="form-select" name="gender">
+                                        <option value="男" {{ 'selected' if member and member.gender == '男' else '' }}>♂ 男</option>
+                                        <option value="女" {{ 'selected' if member and member.gender == '女' else '' }}>♀ 女</option>
+                                        <option value="未知" {{ 'selected' if (not member) or member.gender == '未知' else '' }}>未知</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-bold">出生日期</label>
+                                    <input type="date" class="form-control" name="birth_date"
+                                           value="{{ member.birth_date if member else '' }}">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-bold">去世日期 <small class="text-muted">(健在请留空)</small></label>
+                                    <input type="date" class="form-control" name="death_date"
+                                           value="{{ member.death_date if member else '' }}">
+                                </div>
+                                <div class="col-12">
+                                    <div class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" name="is_alive"
+                                               {{ 'checked' if (not member) or member.is_alive else '' }}>
+                                        <label class="form-check-label fw-bold">✓ 健在</label>
+                                    </div>
+                                </div>
+                            </div>
 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="birth_date">出生日期</label>
-                        <input type="date" id="birth_date" name="birth_date"
-                               value="{{ member.birth_date if member else '' }}">
-                    </div>
-                    <div class="form-group">
-                        <label for="death_date">去世日期</label>
-                        <input type="date" id="death_date" name="death_date"
-                               value="{{ member.death_date if member else '' }}">
-                        <small>如健在请留空</small>
-                    </div>
-                </div>
+                            <!-- 家庭关系 -->
+                            <h5 class="text-primary mb-3 pb-2 border-bottom">👨‍👩‍👧‍👦 家庭关系</h5>
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">父亲 <small class="text-muted">(仅显示男性)</small></label>
+                                    <select class="form-select" name="father_id">
+                                        <option value="">— 请选择 —</option>
+                                        {% for m in members %}
+                                            {% if m.gender == '男' and (member is none or m.id != member.id) %}
+                                                <option value="{{ m.id }}"
+                                                    {{ 'selected' if member and member.father_id == m.id else '' }}>
+                                                    {{ m.name }} ({{ m.birth_date or '未知出生' }})
+                                                </option>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">母亲 <small class="text-muted">(仅显示女性)</small></label>
+                                    <select class="form-select" name="mother_id">
+                                        <option value="">— 请选择 —</option>
+                                        {% for m in members %}
+                                            {% if m.gender == '女' and (member is none or m.id != member.id) %}
+                                                <option value="{{ m.id }}"
+                                                    {{ 'selected' if member and member.mother_id == m.id else '' }}>
+                                                    {{ m.name }} ({{ m.birth_date or '未知出生' }})
+                                                </option>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-bold">配偶</label>
+                                    <select class="form-select" name="spouse_id">
+                                        <option value="">— 请选择 —</option>
+                                        {% for m in members %}
+                                            {% if member is none or m.id != member.id %}
+                                                <option value="{{ m.id }}"
+                                                    {{ 'selected' if member and member.spouse_id == m.id else '' }}>
+                                                    {{ m.name }} ({{ m.gender }})
+                                                </option>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
 
-                <div class="form-row">
-                    <div class="form-group form-check-group">
-                        <label>
-                            <input type="checkbox" name="is_alive"
-                                   {{ 'checked' if (not member) or member.is_alive else '' }}
-                                   onchange="toggleDeathDate(this)">
-                            健在
-                        </label>
+                            <!-- 其他信息 -->
+                            <h5 class="text-primary mb-3 pb-2 border-bottom">📄 其他信息</h5>
+                            <div class="mb-4">
+                                <label class="form-label fw-bold">备注（生平、职业、籍贯等）</label>
+                                <textarea class="form-control" name="note" rows="4"
+                                          placeholder="可记录职业、籍贯、重要事件等">{{ member.note if member else '' }}</textarea>
+                            </div>
+
+                            <div class="d-flex gap-2 mt-4 pt-3 border-top">
+                                <button type="submit" class="btn btn-primary btn-lg flex-fill">
+                                    {{ '💾 保存修改' if action == 'edit' else '➕ 添加成员' }}
+                                </button>
+                                <a href="{{ url_for('index') }}" class="btn btn-secondary btn-lg">取消</a>
+                            </div>
+                        </form>
                     </div>
                 </div>
             </div>
-
-            <div class="form-section">
-                <h2>家庭关系</h2>
-                <p class="section-tip">提示：先添加父母成员，再在此处选择关系。配偶也需要先添加为独立成员。</p>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="father_id">父亲</label>
-                        <select id="father_id" name="father_id">
-                            <option value="">— 请选择 —</option>
-                            {% for m in members %}
-                                {% if (member is none or m.id != member.id) and m.gender == '男' %}
-                                    <option value="{{ m.id }}"
-                                        {{ 'selected' if member and member.father_id == m.id else '' }}>
-                                        {{ m.name }}（{{ m.gender }}{{ '·' + m.birth_date if m.birth_date else '' }}）
-                                    </option>
-                                {% endif %}
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label for="mother_id">母亲</label>
-                        <select id="mother_id" name="mother_id">
-                            <option value="">— 请选择 —</option>
-                            {% for m in members %}
-                                {% if (member is none or m.id != member.id) and m.gender == '女' %}
-                                    <option value="{{ m.id }}"
-                                        {{ 'selected' if member and member.mother_id == m.id else '' }}>
-                                        {{ m.name }}（{{ m.gender }}{{ '·' + m.birth_date if m.birth_date else '' }}）
-                                    </option>
-                                {% endif %}
-                            {% endfor %}
-                        </select>
-                    </div>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="spouse_id">配偶</label>
-                        <select id="spouse_id" name="spouse_id">
-                            <option value="">— 请选择 —</option>
-                            {% for m in members %}
-                                {% if member is none or m.id != member.id %}
-                                    <option value="{{ m.id }}"
-                                        {{ 'selected' if member and member.spouse_id == m.id else '' }}>
-                                        {{ m.name }}（{{ m.gender }}{{ '·' + m.birth_date if m.birth_date else '' }}）
-                                    </option>
-                                {% endif %}
-                            {% endfor %}
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="form-section">
-                <h2>其他信息</h2>
-                <div class="form-group">
-                    <label for="note">备注（生平、职业、籍贯等）</label>
-                    <textarea id="note" name="note" rows="4"
-                              placeholder="可记录职业、籍贯、重要事件等">{{ member.note if member else '' }}</textarea>
-                </div>
-            </div>
-
-            <div class="form-actions">
-                <button type="submit" class="btn btn-primary">
-                    {{ '保存修改' if action == 'edit' else '添加成员' }}
-                </button>
-                <a href="{{ url_for('index') }}" class="btn btn-secondary">取消</a>
-            </div>
-        </form>
+        </div>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // 健在状态切换时，自动禁用/启用去世日期
-        function toggleDeathDate(checkbox) {
-            const deathInput = document.getElementById('death_date');
-            deathInput.disabled = checkbox.checked;
-            if (checkbox.checked) {
-                deathInput.value = '';
-            }
-        }
-        // 页面加载时初始化
+        // 健在状态切换
         document.addEventListener('DOMContentLoaded', function() {
             const isAlive = document.querySelector('input[name="is_alive"]');
-            if (isAlive) {
-                toggleDeathDate(isAlive);
+            const deathInput = document.querySelector('input[name="death_date"]');
+            if (isAlive && deathInput) {
+                function toggle() {
+                    deathInput.disabled = isAlive.checked;
+                    if (isAlive.checked) deathInput.value = '';
+                }
+                isAlive.addEventListener('change', toggle);
+                toggle();
             }
         });
     </script>

@@ -25,6 +25,28 @@ def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row  # 让查询结果支持通过列名访问
+        # 自动检查表是否存在，如果不存在则创建
+        g.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                gender TEXT DEFAULT '未知',
+                birth_date TEXT,
+                death_date TEXT,
+                is_alive INTEGER DEFAULT 1,
+                father_id INTEGER,
+                mother_id INTEGER,
+                spouse_id INTEGER,
+                note TEXT,
+                created_at TEXT,
+                FOREIGN KEY (father_id) REFERENCES members(id),
+                FOREIGN KEY (mother_id) REFERENCES members(id),
+                FOREIGN KEY (spouse_id) REFERENCES members(id)
+            )
+        """
+        )
+        g.db.commit()
     return g.db
 
 
@@ -349,24 +371,61 @@ def view_member(member_id):
 
 @app.route("/api/tree")
 def api_tree():
-    """提供族谱树形数据（JSON），供前端渲染树形结构"""
+    """提供族谱树形数据（JSON），供前端渲染树形结构。
+    修复了同一成员在树中出现多次的问题：一个成员只能作为其父亲的子女（若父亲为空则作为母亲的子女）。
+    同时确保配偶不会作为独立的根节点出现。
+    """
     members = [format_member(m) for m in get_all_members()]
-    # 找出所有根节点（没有父亲的成员，作为树的起点）
-    root_ids = [m["id"] for m in members if not m["father_id"] and not m["mother_id"]]
     member_map = {m["id"]: m for m in members}
 
+    # 找出所有根节点：没有父亲的成员
+    # 但如果一个成员已经是另一个根节点的配偶，就不要把它也作为根节点
+    root_ids = []
+    excluded_ids = set()  # 被排除的根节点ID（因为它们是其他根节点的配偶）
+
+    # 第一遍：收集所有没有父亲的成员
+    candidates = []
+    for m in members:
+        if not m["father_id"]:
+            candidates.append(m["id"])
+
+    # 第二遍：如果候选成员是另一个候选成员的配偶，就排除它
+    for cid in candidates:
+        m = member_map.get(cid)
+        if m and m["spouse_id"] and m["spouse_id"] in candidates:
+            # 比较ID大小，选择较小的作为根节点（确保一致性）
+            if m["spouse_id"] < cid:
+                excluded_ids.add(cid)
+
+    # 构建最终的根节点列表
+    root_ids = [cid for cid in candidates if cid not in excluded_ids]
+
+    # 维护已访问的集合，防止节点重复渲染
+    visited = set()
+
     def build_node(member_id):
-        """递归构建子节点"""
+        """递归构建子节点，确保每个节点只出现一次"""
+        if member_id in visited:
+            return None
+        visited.add(member_id)
+
         m = member_map.get(member_id)
         if not m:
             return None
-        children = [
-            build_node(c["id"])
-            for c in members
-            if c["father_id"] == member_id or c["mother_id"] == member_id
-        ]
-        # 过滤None
+
+        # 查找子女：优先查找 father_id 匹配的成员
+        children_ids = []
+        for c in members:
+            # 如果该成员的父亲是当前成员，或者（没有父亲且母亲是当前成员）
+            if c["father_id"] == member_id or (
+                not c["father_id"] and c["mother_id"] == member_id
+            ):
+                if c["id"] not in visited:
+                    children_ids.append(c["id"])
+
+        children = [build_node(cid) for cid in children_ids]
         children = [c for c in children if c]
+
         return {
             "id": m["id"],
             "name": m["name"],
@@ -387,6 +446,226 @@ def api_tree():
     tree = [build_node(rid) for rid in root_ids]
     tree = [t for t in tree if t]
     return jsonify(tree)
+
+
+# === AJAX API 接口 ===
+
+
+@app.route("/api/member/add", methods=["POST"])
+def api_add_member():
+    """AJAX 添加成员接口"""
+    try:
+        # 优先尝试获取 JSON 数据，如果失败则获取表单数据
+        try:
+            data = request.get_json(force=True)
+        except Exception:
+            data = request.form.to_dict(flat=False)
+
+        # 处理 FormData 返回的列表值
+        if isinstance(data, dict):
+            for key, val in data.items():
+                if isinstance(val, list):
+                    data[key] = val[0] if val else None
+
+        name = data.get("name", "").strip() if data.get("name") else ""
+        if not name:
+            return jsonify(success=False, message="姓名不能为空"), 400
+
+        gender = data.get("gender", "未知")
+        birth_date = data.get("birth_date", "").strip() or None
+        death_date = data.get("death_date", "").strip() or None
+        is_alive = 1 if data.get("is_alive") == "on" else 0
+        father_id = data.get("father_id") or None
+        mother_id = data.get("mother_id") or None
+        spouse_id = data.get("spouse_id") or None
+        note = data.get("note", "").strip()
+
+        father_id = int(father_id) if father_id else None
+        mother_id = int(mother_id) if mother_id else None
+        spouse_id = int(spouse_id) if spouse_id else None
+
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        db = get_db()
+        # 后端性别校验
+        if father_id:
+            father_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (father_id,)
+            ).fetchone()
+            if not father_row or father_row["gender"] != "男":
+                return jsonify(success=False, message="父亲必须选择男性成员"), 400
+        if mother_id:
+            mother_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (mother_id,)
+            ).fetchone()
+            if not mother_row or mother_row["gender"] != "女":
+                return jsonify(success=False, message="母亲必须选择女性成员"), 400
+
+        cursor = db.execute(
+            """INSERT INTO members 
+               (name, gender, birth_date, death_date, is_alive, 
+                father_id, mother_id, spouse_id, note, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name,
+                gender,
+                birth_date,
+                death_date,
+                is_alive,
+                father_id,
+                mother_id,
+                spouse_id,
+                note,
+                created_at,
+            ),
+        )
+        new_id = cursor.lastrowid
+
+        # 如果指定了配偶，反向更新配偶的 spouse_id
+        if spouse_id:
+            db.execute(
+                "UPDATE members SET spouse_id = ? WHERE id = ?", (new_id, spouse_id)
+            )
+
+        db.commit()
+        return jsonify(success=True, message=f"成员「{name}」添加成功！", id=new_id)
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/member/edit/<int:member_id>", methods=["POST"])
+def api_edit_member(member_id):
+    """AJAX 编辑成员接口"""
+    try:
+        member = get_member(member_id)
+        if member is None:
+            return jsonify(success=False, message="成员不存在"), 404
+
+        # 优先尝试获取 JSON 数据，如果失败则获取表单数据
+        try:
+            data = request.get_json(force=True)
+        except Exception:
+            data = request.form.to_dict(flat=False)
+
+        # 处理 FormData 返回的列表值
+        if isinstance(data, dict):
+            for key, val in data.items():
+                if isinstance(val, list):
+                    data[key] = val[0] if val else None
+
+        name = data.get("name", "").strip() if data.get("name") else ""
+        if not name:
+            return jsonify(success=False, message="姓名不能为空"), 400
+
+        gender = data.get("gender", "未知")
+        birth_date = data.get("birth_date", "").strip() or None
+        death_date = data.get("death_date", "").strip() or None
+        is_alive = 1 if data.get("is_alive") == "on" else 0
+        father_id = data.get("father_id") or None
+        mother_id = data.get("mother_id") or None
+        spouse_id = data.get("spouse_id") or None
+        note = data.get("note", "").strip()
+
+        father_id = int(father_id) if father_id else None
+        mother_id = int(mother_id) if mother_id else None
+        spouse_id = int(spouse_id) if spouse_id else None
+
+        # 防止把本人设为自己的父/母/配偶
+        father_id = None if father_id == member_id else father_id
+        mother_id = None if mother_id == member_id else mother_id
+        spouse_id = None if spouse_id == member_id else spouse_id
+
+        db = get_db()
+        # 后端性别校验
+        if father_id:
+            father_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (father_id,)
+            ).fetchone()
+            if not father_row or father_row["gender"] != "男":
+                return jsonify(success=False, message="父亲必须选择男性成员"), 400
+        if mother_id:
+            mother_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (mother_id,)
+            ).fetchone()
+            if not mother_row or mother_row["gender"] != "女":
+                return jsonify(success=False, message="母亲必须选择女性成员"), 400
+
+        db.execute(
+            """UPDATE members SET
+               name = ?, gender = ?, birth_date = ?, death_date = ?, is_alive = ?,
+               father_id = ?, mother_id = ?, spouse_id = ?, note = ?
+               WHERE id = ?""",
+            (
+                name,
+                gender,
+                birth_date,
+                death_date,
+                is_alive,
+                father_id,
+                mother_id,
+                spouse_id,
+                note,
+                member_id,
+            ),
+        )
+
+        # 处理配偶关系的双向更新
+        old_spouse_id = member["spouse_id"]
+        if spouse_id != old_spouse_id:
+            # 如果有新配偶，更新新配偶的 spouse_id
+            if spouse_id:
+                db.execute(
+                    "UPDATE members SET spouse_id = ? WHERE id = ?",
+                    (member_id, spouse_id),
+                )
+            # 如果有旧配偶，清除旧配偶的 spouse_id（除非旧配偶已经是其他人的配偶）
+            if old_spouse_id:
+                old_spouse = get_member(old_spouse_id)
+                if old_spouse and old_spouse["spouse_id"] == member_id:
+                    db.execute(
+                        "UPDATE members SET spouse_id = NULL WHERE id = ?",
+                        (old_spouse_id,),
+                    )
+
+        db.commit()
+        return jsonify(success=True, message=f"成员「{name}」更新成功！")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/member/delete/<int:member_id>", methods=["POST"])
+def api_delete_member(member_id):
+    """AJAX 删除成员接口"""
+    try:
+        member = get_member(member_id)
+        if member is None:
+            return jsonify(success=False, message="成员不存在"), 404
+
+        name = member["name"]
+        db = get_db()
+        db.execute(
+            "UPDATE members SET father_id = NULL WHERE father_id = ?", (member_id,)
+        )
+        db.execute(
+            "UPDATE members SET mother_id = NULL WHERE mother_id = ?", (member_id,)
+        )
+        db.execute(
+            "UPDATE members SET spouse_id = NULL WHERE spouse_id = ?", (member_id,)
+        )
+        db.execute("DELETE FROM members WHERE id = ?", (member_id,))
+        db.commit()
+        return jsonify(success=True, message=f"成员「{name}」已删除")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/member/<int:member_id>")
+def api_get_member(member_id):
+    """获取单个成员信息（用于表单回填）"""
+    member = get_member(member_id)
+    if member is None:
+        return jsonify(success=False, message="成员不存在"), 404
+    return jsonify(success=True, data=format_member(member))
 
 
 @app.route("/search")
