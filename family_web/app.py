@@ -25,11 +25,25 @@ def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
         g.db.row_factory = sqlite3.Row  # 让查询结果支持通过列名访问
-        # 自动检查表是否存在，如果不存在则创建
+
+        # 创建家族表
+        g.db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS families (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TEXT
+            )
+            """
+        )
+
+        # 创建成员表（包含 family_id）
         g.db.execute(
             """
             CREATE TABLE IF NOT EXISTS members (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                family_id INTEGER DEFAULT 1,
                 name TEXT NOT NULL,
                 gender TEXT DEFAULT '未知',
                 birth_date TEXT,
@@ -40,12 +54,33 @@ def get_db():
                 spouse_id INTEGER,
                 note TEXT,
                 created_at TEXT,
+                FOREIGN KEY (family_id) REFERENCES families(id),
                 FOREIGN KEY (father_id) REFERENCES members(id),
                 FOREIGN KEY (mother_id) REFERENCES members(id),
                 FOREIGN KEY (spouse_id) REFERENCES members(id)
             )
-        """
+            """
         )
+
+        # 检查是否需要添加 family_id 列（旧数据库升级）
+        columns = [
+            col[1] for col in g.db.execute("PRAGMA table_info(members)").fetchall()
+        ]
+        if "family_id" not in columns:
+            g.db.execute("ALTER TABLE members ADD COLUMN family_id INTEGER DEFAULT 1")
+
+        # 确保至少有一个默认家族
+        family_count = g.db.execute("SELECT COUNT(*) FROM families").fetchone()[0]
+        if family_count == 0:
+            g.db.execute(
+                "INSERT INTO families (name, description, created_at) VALUES (?, ?, ?)",
+                (
+                    "默认家族",
+                    "系统默认创建的家族",
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+
         g.db.commit()
     return g.db
 
@@ -61,26 +96,60 @@ def close_db(error):
 def init_db():
     """初始化数据库表结构"""
     db = sqlite3.connect(DB_PATH)
+
+    # 创建家族表
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS families (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT
+        )
+        """
+    )
+
+    # 创建成员表
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,                       -- 姓名
-            gender TEXT DEFAULT '未知',               -- 性别：男/女/未知
-            birth_date TEXT,                          -- 出生日期
-            death_date TEXT,                          -- 去世日期（健在则留空）
-            is_alive INTEGER DEFAULT 1,               -- 是否健在：1健在/0已故
-            father_id INTEGER,                        -- 父亲ID
-            mother_id INTEGER,                        -- 母亲ID
-            spouse_id INTEGER,                        -- 配偶ID
-            note TEXT,                                -- 备注（生平、职业等）
-            created_at TEXT,                          -- 创建时间
+            family_id INTEGER DEFAULT 1,
+            name TEXT NOT NULL,
+            gender TEXT DEFAULT '未知',
+            birth_date TEXT,
+            death_date TEXT,
+            is_alive INTEGER DEFAULT 1,
+            father_id INTEGER,
+            mother_id INTEGER,
+            spouse_id INTEGER,
+            note TEXT,
+            created_at TEXT,
+            FOREIGN KEY (family_id) REFERENCES families(id),
             FOREIGN KEY (father_id) REFERENCES members(id),
             FOREIGN KEY (mother_id) REFERENCES members(id),
             FOREIGN KEY (spouse_id) REFERENCES members(id)
         )
-    """
+        """
     )
+
+    # 检查是否需要添加 family_id 列（旧数据库升级）
+    columns = [col[1] for col in db.execute("PRAGMA table_info(members)").fetchall()]
+    if "family_id" not in columns:
+        db.execute("ALTER TABLE members ADD COLUMN family_id INTEGER DEFAULT 1")
+
+    # 确保至少有一个默认家族
+    family_count = db.execute("SELECT COUNT(*) FROM families").fetchone()[0]
+    if family_count == 0:
+        db.execute(
+            "INSERT INTO families (name, description, created_at) VALUES (?, ?, ?)",
+            (
+                "默认家族",
+                "系统默认创建的家族",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+
     db.commit()
     db.close()
 
@@ -112,6 +181,7 @@ def format_member(row):
         return None
     return {
         "id": row["id"],
+        "family_id": row["family_id"] if "family_id" in row.keys() else 1,
         "name": row["name"],
         "gender": row["gender"],
         "birth_date": row["birth_date"] or "",
@@ -125,11 +195,18 @@ def format_member(row):
     }
 
 
+def get_all_families():
+    """获取所有家族列表"""
+    db = get_db()
+    return db.execute("SELECT * FROM families ORDER BY id").fetchall()
+
+
 @app.route("/")
 def index():
     """主页：展示所有成员"""
     members = [format_member(m) for m in get_all_members()]
-    return render_template("index.html", members=members)
+    families = get_all_families()
+    return render_template("index.html", members=members, families=families)
 
 
 @app.route("/member/add", methods=["GET", "POST"])
@@ -374,8 +451,19 @@ def api_tree():
     """提供族谱树形数据（JSON），供前端渲染树形结构。
     修复了同一成员在树中出现多次的问题：一个成员只能作为其父亲的子女（若父亲为空则作为母亲的子女）。
     同时确保配偶不会作为独立的根节点出现。
+    支持按家族过滤。
     """
-    members = [format_member(m) for m in get_all_members()]
+    family_id = request.args.get("family_id")
+    db = get_db()
+
+    if family_id:
+        members_raw = db.execute(
+            "SELECT * FROM members WHERE family_id = ? ORDER BY id", (int(family_id),)
+        ).fetchall()
+    else:
+        members_raw = db.execute("SELECT * FROM members ORDER BY id").fetchall()
+
+    members = [format_member(m) for m in members_raw]
     member_map = {m["id"]: m for m in members}
 
     # 找出所有根节点：没有父亲的成员
@@ -451,6 +539,184 @@ def api_tree():
 # === AJAX API 接口 ===
 
 
+@app.route("/api/member/delete/<int:member_id>", methods=["POST"])
+def api_delete_member(member_id):
+    """AJAX 删除成员接口"""
+    try:
+        member = get_member(member_id)
+        if member is None:
+            return jsonify(success=False, message="成员不存在"), 404
+
+        name = member["name"]
+        db = get_db()
+        db.execute(
+            "UPDATE members SET father_id = NULL WHERE father_id = ?", (member_id,)
+        )
+        db.execute(
+            "UPDATE members SET mother_id = NULL WHERE mother_id = ?", (member_id,)
+        )
+        db.execute(
+            "UPDATE members SET spouse_id = NULL WHERE spouse_id = ?", (member_id,)
+        )
+        db.execute("DELETE FROM members WHERE id = ?", (member_id,))
+        db.commit()
+        return jsonify(success=True, message=f"成员「{name}」已删除")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/member/<int:member_id>")
+def api_get_member(member_id):
+    """获取单个成员信息（用于表单回填）"""
+    member = get_member(member_id)
+    if member is None:
+        return jsonify(success=False, message="成员不存在"), 404
+    return jsonify(success=True, data=format_member(member))
+
+
+@app.route("/search")
+def search():
+    """搜索成员"""
+    keyword = request.args.get("q", "").strip()
+    if not keyword:
+        return redirect(url_for("index"))
+    db = get_db()
+    results = db.execute(
+        "SELECT * FROM members WHERE name LIKE ? OR note LIKE ? ORDER BY id",
+        (f"%{keyword}%", f"%{keyword}%"),
+    ).fetchall()
+    members = [format_member(m) for m in get_all_members()]
+    results = [format_member(r) for r in results]
+    families = get_all_families()
+    return render_template(
+        "index.html",
+        members=members,
+        search_results=results,
+        keyword=keyword,
+        families=families,
+    )
+
+
+# === 家族管理 API ===
+
+
+@app.route("/api/families")
+def api_get_families():
+    """获取所有家族列表"""
+    try:
+        families = get_all_families()
+        family_list = [
+            {
+                "id": f["id"],
+                "name": f["name"],
+                "description": f["description"] or "",
+                "created_at": f["created_at"] or "",
+            }
+            for f in families
+        ]
+        return jsonify(success=True, families=family_list)
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/family/add", methods=["POST"])
+def api_add_family():
+    """添加新家族"""
+    try:
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify(success=False, message="家族名称不能为空"), 400
+
+        description = data.get("description", "").strip()
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        db = get_db()
+        cursor = db.execute(
+            "INSERT INTO families (name, description, created_at) VALUES (?, ?, ?)",
+            (name, description, created_at),
+        )
+        db.commit()
+        return jsonify(
+            success=True, message=f"家族「{name}」添加成功！", id=cursor.lastrowid
+        )
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/family/edit/<int:family_id>", methods=["POST"])
+def api_edit_family(family_id):
+    """编辑家族信息"""
+    try:
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify(success=False, message="家族名称不能为空"), 400
+
+        description = data.get("description", "").strip()
+
+        db = get_db()
+        db.execute(
+            "UPDATE families SET name = ?, description = ? WHERE id = ?",
+            (name, description, family_id),
+        )
+        db.commit()
+        return jsonify(success=True, message=f"家族「{name}」更新成功！")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+@app.route("/api/family/delete/<int:family_id>", methods=["POST"])
+def api_delete_family(family_id):
+    """删除家族"""
+    try:
+        db = get_db()
+        # 检查是否有成员属于该家族
+        member_count = db.execute(
+            "SELECT COUNT(*) FROM members WHERE family_id = ?", (family_id,)
+        ).fetchone()[0]
+        if member_count > 0:
+            return jsonify(success=False, message="该家族下还有成员，无法删除"), 400
+
+        # 不允许删除最后一个家族
+        family_count = db.execute("SELECT COUNT(*) FROM families").fetchone()[0]
+        if family_count <= 1:
+            return jsonify(success=False, message="至少保留一个家族"), 400
+
+        db.execute("DELETE FROM families WHERE id = ?", (family_id,))
+        db.commit()
+        return jsonify(success=True, message="家族已删除")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+# === 成员列表 API（用于配偶选择） ===
+
+
+@app.route("/api/members")
+def api_get_members():
+    """获取成员列表（用于下拉选择）"""
+    try:
+        family_id = request.args.get("family_id")
+        db = get_db()
+
+        if family_id:
+            members = db.execute(
+                "SELECT * FROM members WHERE family_id = ? ORDER BY id",
+                (int(family_id),),
+            ).fetchall()
+        else:
+            members = db.execute("SELECT * FROM members ORDER BY id").fetchall()
+
+        member_list = [format_member(m) for m in members]
+        return jsonify(success=True, members=member_list)
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
+
+
+# === 修改后的成员 API（支持家族过滤和配偶性别校验） ===
+
+
 @app.route("/api/member/add", methods=["POST"])
 def api_add_member():
     """AJAX 添加成员接口"""
@@ -479,21 +745,25 @@ def api_add_member():
         mother_id = data.get("mother_id") or None
         spouse_id = data.get("spouse_id") or None
         note = data.get("note", "").strip()
+        family_id = data.get("family_id") or 1
 
         father_id = int(father_id) if father_id else None
         mother_id = int(mother_id) if mother_id else None
         spouse_id = int(spouse_id) if spouse_id else None
+        family_id = int(family_id) if family_id else 1
 
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         db = get_db()
-        # 后端性别校验
+        # 后端性别校验：父亲必须是男性
         if father_id:
             father_row = db.execute(
                 "SELECT gender FROM members WHERE id = ?", (father_id,)
             ).fetchone()
             if not father_row or father_row["gender"] != "男":
                 return jsonify(success=False, message="父亲必须选择男性成员"), 400
+
+        # 后端性别校验：母亲必须是女性
         if mother_id:
             mother_row = db.execute(
                 "SELECT gender FROM members WHERE id = ?", (mother_id,)
@@ -501,12 +771,25 @@ def api_add_member():
             if not mother_row or mother_row["gender"] != "女":
                 return jsonify(success=False, message="母亲必须选择女性成员"), 400
 
+        # 后端性别校验：配偶必须是异性
+        if spouse_id:
+            spouse_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (spouse_id,)
+            ).fetchone()
+            if not spouse_row:
+                return jsonify(success=False, message="选择的配偶不存在"), 400
+            if gender == "男" and spouse_row["gender"] != "女":
+                return jsonify(success=False, message="男性成员的配偶必须是女性"), 400
+            if gender == "女" and spouse_row["gender"] != "男":
+                return jsonify(success=False, message="女性成员的配偶必须是男性"), 400
+
         cursor = db.execute(
             """INSERT INTO members 
-               (name, gender, birth_date, death_date, is_alive, 
+               (family_id, name, gender, birth_date, death_date, is_alive, 
                 father_id, mother_id, spouse_id, note, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
+                family_id,
                 name,
                 gender,
                 birth_date,
@@ -576,19 +859,31 @@ def api_edit_member(member_id):
         spouse_id = None if spouse_id == member_id else spouse_id
 
         db = get_db()
-        # 后端性别校验
+        # 后端性别校验：父亲必须是男性
         if father_id:
             father_row = db.execute(
                 "SELECT gender FROM members WHERE id = ?", (father_id,)
             ).fetchone()
             if not father_row or father_row["gender"] != "男":
                 return jsonify(success=False, message="父亲必须选择男性成员"), 400
+        # 后端性别校验：母亲必须是女性
         if mother_id:
             mother_row = db.execute(
                 "SELECT gender FROM members WHERE id = ?", (mother_id,)
             ).fetchone()
             if not mother_row or mother_row["gender"] != "女":
                 return jsonify(success=False, message="母亲必须选择女性成员"), 400
+        # 后端性别校验：配偶必须是异性
+        if spouse_id:
+            spouse_row = db.execute(
+                "SELECT gender FROM members WHERE id = ?", (spouse_id,)
+            ).fetchone()
+            if not spouse_row:
+                return jsonify(success=False, message="选择的配偶不存在"), 400
+            if gender == "男" and spouse_row["gender"] != "女":
+                return jsonify(success=False, message="男性成员的配偶必须是女性"), 400
+            if gender == "女" and spouse_row["gender"] != "男":
+                return jsonify(success=False, message="女性成员的配偶必须是男性"), 400
 
         db.execute(
             """UPDATE members SET
@@ -631,59 +926,6 @@ def api_edit_member(member_id):
         return jsonify(success=True, message=f"成员「{name}」更新成功！")
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
-
-
-@app.route("/api/member/delete/<int:member_id>", methods=["POST"])
-def api_delete_member(member_id):
-    """AJAX 删除成员接口"""
-    try:
-        member = get_member(member_id)
-        if member is None:
-            return jsonify(success=False, message="成员不存在"), 404
-
-        name = member["name"]
-        db = get_db()
-        db.execute(
-            "UPDATE members SET father_id = NULL WHERE father_id = ?", (member_id,)
-        )
-        db.execute(
-            "UPDATE members SET mother_id = NULL WHERE mother_id = ?", (member_id,)
-        )
-        db.execute(
-            "UPDATE members SET spouse_id = NULL WHERE spouse_id = ?", (member_id,)
-        )
-        db.execute("DELETE FROM members WHERE id = ?", (member_id,))
-        db.commit()
-        return jsonify(success=True, message=f"成员「{name}」已删除")
-    except Exception as e:
-        return jsonify(success=False, message=str(e)), 500
-
-
-@app.route("/api/member/<int:member_id>")
-def api_get_member(member_id):
-    """获取单个成员信息（用于表单回填）"""
-    member = get_member(member_id)
-    if member is None:
-        return jsonify(success=False, message="成员不存在"), 404
-    return jsonify(success=True, data=format_member(member))
-
-
-@app.route("/search")
-def search():
-    """搜索成员"""
-    keyword = request.args.get("q", "").strip()
-    if not keyword:
-        return redirect(url_for("index"))
-    db = get_db()
-    results = db.execute(
-        "SELECT * FROM members WHERE name LIKE ? OR note LIKE ? ORDER BY id",
-        (f"%{keyword}%", f"%{keyword}%"),
-    ).fetchall()
-    members = [format_member(m) for m in get_all_members()]
-    results = [format_member(r) for r in results]
-    return render_template(
-        "index.html", members=members, search_results=results, keyword=keyword
-    )
 
 
 if __name__ == "__main__":
